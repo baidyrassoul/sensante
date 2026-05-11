@@ -39,6 +39,15 @@ app = FastAPI(
     description="Assistant pré-diagnostic médical pour le Sénégal",
     version="0.2.0"
 )
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],   # En dev : tout accepter
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ============================================

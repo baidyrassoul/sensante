@@ -6,6 +6,22 @@ from fastapi import FastAPI
 from pydantic import BaseModel, Field
 import joblib
 import numpy as np
+import os
+from dotenv import load_dotenv
+from groq import Groq
+
+# Charger les variables d'environnement
+load_dotenv()
+
+# Client Groq (initialisé au démarrage de l'API)
+groq_client = None
+groq_api_key = os.getenv("GROQ_API_KEY")
+
+if groq_api_key:
+    groq_client = Groq(api_key=groq_api_key)
+    print("Client Groq initialise.")
+else:
+    print("ATTENTION : GROQ_API_KEY non trouvee. /explain sera desactive.")
 
 
 # ============================================
@@ -30,6 +46,23 @@ class DiagnosticOutput(BaseModel):
     message: str
 
 
+class ExplainInput(BaseModel):
+    diagnostic: str = Field(..., description="Diagnostic predit par le modele")
+    probabilite: float = Field(..., description="Probabilite du diagnostic")
+    age: int = Field(...)
+    sexe: str = Field(...)
+    temperature: float = Field(...)
+    region: str = Field(...)
+
+
+class ExplainOutput(BaseModel):
+    explication: str = Field(..., description="Explication en francais")
+    modele_llm: str = Field(
+        default="llama-3.1-8b-instant",
+        description="Modele LLM utilise"
+    )
+
+
 # ============================================
 # APPLICATION FASTAPI
 # ============================================
@@ -43,7 +76,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # En dev : tout accepter
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -85,8 +118,6 @@ def health_check():
 def predict(patient: PatientInput):
     """
     Prédire un diagnostic à partir des symptômes d'un patient.
-    Reçoit les symptômes en JSON, renvoie le diagnostic,
-    la probabilité et une recommandation.
     """
 
     # 1. Encoder le sexe
@@ -164,3 +195,53 @@ def model_info():
         "classes"       : list(model.classes_),
         "nb_features"   : model.n_features_in_
     }
+
+
+# ============================================
+# ROUTE POST /explain
+# ============================================
+
+SYSTEM_PROMPT = """Tu es un assistant medical senegalais.
+Tu recois un diagnostic et des donnees patient.
+Explique le resultat en francais simple,
+comme un medecin parlerait a son patient.
+Sois rassurant mais recommande toujours
+une consultation medicale.
+Maximum 3 phrases.
+Ne fais JAMAIS de diagnostic toi-meme.
+Tu expliques uniquement le diagnostic fourni."""
+
+@app.post("/explain", response_model=ExplainOutput)
+def explain(data: ExplainInput):
+    """Expliquer un diagnostic en francais avec un LLM."""
+
+    if not groq_client:
+        return ExplainOutput(
+            explication="Service d'explication indisponible. Cle API non configuree.",
+            modele_llm="aucun"
+        )
+
+    user_prompt = (
+        f"Patient : {data.sexe}, {data.age} ans, region {data.region}\n"
+        f"Temperature : {data.temperature} C\n"
+        f"Diagnostic du modele : {data.diagnostic} "
+        f"(probabilite {data.probabilite:.0%})\n"
+        f"Explique ce resultat au patient."
+    )
+
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt}
+            ],
+            max_tokens=200,
+            temperature=0.3
+        )
+        explication = response.choices[0].message.content
+
+    except Exception as e:
+        explication = f"Erreur lors de l'appel au LLM : {str(e)}"
+
+    return ExplainOutput(explication=explication)
